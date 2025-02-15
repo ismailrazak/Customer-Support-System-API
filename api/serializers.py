@@ -3,20 +3,19 @@ from rest_framework import serializers
 from .models import CustomerSupportRepProfile,CustomerProfile,Conversation,Message
 
 class UserSerializer(serializers.ModelSerializer):
-    # todo add reverse cusotmerprofile ?
     class Meta:
         model = get_user_model()
         fields = ['id','username','first_name','last_name','email']
 
 class CustomerSupportRepProfileSerializer(serializers.Serializer):
     user = UserSerializer()
-
+    max_capacity = serializers.IntegerField()
     password = serializers.CharField(write_only=True)
     password1 = serializers.CharField(write_only=True)
 
     class Meta:
         model = CustomerSupportRepProfile
-        fields = ['id', "password", "password1",'user']
+        fields = ['id',"max_capacity", "password", "password1",'user']
 
     def validate(self, data):
         password = data.get("password")
@@ -28,12 +27,12 @@ class CustomerSupportRepProfileSerializer(serializers.Serializer):
     def create(self, validated_data):
         password = validated_data.pop("password")
         password1 = validated_data.pop("password1")
-        phone_number = validated_data.pop('phone_number')
+        max_capacity = validated_data.get('max_capacity',5)
         user = validated_data.pop('user')
         user = get_user_model().objects.create(**user)
         user.set_password(password1)
         user.save()
-        customer_support_rep_profile = CustomerSupportRepProfile.objects.create(user=user)
+        customer_support_rep_profile = CustomerSupportRepProfile.objects.create(max_capacity=max_capacity,user=user)
 
         return customer_support_rep_profile
 
@@ -79,7 +78,7 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
     messages = MessageSerializer(many=True)
 
     class Meta:
-        models = Conversation
+        model = Conversation
         fields= ['id','customer','customer_rep','messages','created_at']
 
 

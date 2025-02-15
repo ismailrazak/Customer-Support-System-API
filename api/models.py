@@ -18,6 +18,8 @@ class CustomerSupportRepProfile(models.Model):
     max_capacity = models.IntegerField(default=5)
     user = models.OneToOneField(User, on_delete=models.CASCADE,related_name='customer_support_profile')
 
+    class Meta:
+        ordering = ['-max_capacity']
     def __str__(self):
         return f"{self.user.username}_customer_rep_profile"
 
@@ -31,7 +33,7 @@ class Conversation(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return self.id
+        return f"{self.id}"
 
 class Message(models.Model):
     text = models.CharField(max_length=200)

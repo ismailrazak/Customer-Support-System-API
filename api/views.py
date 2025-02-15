@@ -3,10 +3,12 @@ from .models import CustomerSupportRepProfile,CustomerProfile,Message,Conversati
 from .serializers import ConversationListSerializer,ConversationDetailSerializer,CustomerProfileSerializer,CustomerSupportRepProfileSerializer
 
 class RegisterCustomerView(CreateAPIView):
+    permission_classes = []
     queryset = CustomerProfile.objects.all()
     serializer_class = CustomerProfileSerializer
 
 class RegisterCustomerSupportRepView(CreateAPIView):
+    permission_classes = []
     queryset = CustomerSupportRepProfile.objects.all()
     serializer_class = CustomerSupportRepProfileSerializer
 
