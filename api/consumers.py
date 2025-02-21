@@ -13,7 +13,6 @@ from django.http import HttpResponseRedirect
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils import timezone
-from pottery import Redlock
 
 from api.models import Conversation, CustomerSupportRepProfile, Message
 
@@ -81,11 +80,11 @@ class ChatConsumer(WebsocketConsumer):
                         self.conversation.customer_rep = free_customer_rep
                         self.conversation.save()
                 if should_add_customer_to_queue:
-                    set_queue_lock = Redlock(
-                        key="conversation_id:set:id", masters={r}, auto_release_time=2
+                    set_queue_lock = r.lock(
+                        name="set_queue_lock", timeout=2, blocking_timeout=2
                     )
-                    list_queue_lock = Redlock(
-                        key="conversation_id:id", masters={r}, auto_release_time=2
+                    list_queue_lock = r.lock(
+                        name="list_queue_lock", timeout=2, blocking_timeout=2
                     )
 
                     if set_queue_lock.acquire() and list_queue_lock.acquire():
@@ -98,16 +97,9 @@ class ChatConsumer(WebsocketConsumer):
                     self.close()
                     raise StopConsumer()
             self.accept()
-        elif hasattr(self.user, "customer_support_profile"):
+        if hasattr(self.user, "customer_support_profile"):
             if self.user.customer_support_profile == self.conversation.customer_rep:
                 self.accept()
-        else:
-            self.accept()
-            self.send(
-                text_data=json.dumps({"message": "You have accessed  the wrong url."})
-            )
-            self.close()
-            raise StopConsumer()
 
     def receive(self, text_data=None, bytes_data=None):
         text_data_json = json.loads(text_data)
@@ -134,11 +126,11 @@ class ChatConsumer(WebsocketConsumer):
         if hasattr(self.user, "customer_support_profile") and bool(close_chat):
             self.conversation.customer_rep = None
             self.conversation.save()
-            set_queue_rem_lock = Redlock(
-                key="conversation_id:set:id", masters={r}, auto_release_time=3
+            set_queue_rem_lock = r.lock(
+                name="set_queue_rem_lock", timeout=2, blocking_timeout=2
             )
-            list_queue_pop_lock = Redlock(
-                key="conversation_id:id", masters={r}, auto_release_time=3
+            list_queue_pop_lock = r.lock(
+                name="list_queue_pop_lock", timeout=2, blocking_timeout=2
             )
 
             if set_queue_rem_lock.acquire() and list_queue_pop_lock.acquire():
