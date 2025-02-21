@@ -7,11 +7,13 @@ from channels.exceptions import StopConsumer
 from channels.generic.websocket import WebsocketConsumer
 from decouple import config
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import transaction
 from django.db.models import F
 from django.http import HttpResponseRedirect
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils import timezone
+from pottery import Redlock
 
 from api.models import Conversation, CustomerSupportRepProfile, Message
 
@@ -46,17 +48,23 @@ class ChatConsumer(WebsocketConsumer):
         if customer_rep is trying to connect, validate him too.
 
         """
+        should_add_customer_to_queue = False
         try:
             self.conversation = Conversation.objects.get(id=self.room_name)
         except ObjectDoesNotExist:
             self.close()
             raise StopConsumer()
-        if hasattr(self.user, "customer_profile"):
-            if self.user.customer_profile == self.conversation.customer:
-                if not self.conversation.customer_rep:
-                    free_customer_rep = CustomerSupportRepProfile.objects.filter(
-                        max_capacity__gt=0
-                    ).first()
+        if (
+            hasattr(self.user, "customer_profile")
+            and self.user.customer_profile == self.conversation.customer
+        ):
+            if not self.conversation.customer_rep:
+                free_customer_rep = (
+                    CustomerSupportRepProfile.objects.select_for_update()
+                    .filter(max_capacity__gt=0)
+                    .first()
+                )
+                with transaction.atomic():
                     if not free_customer_rep:
                         self.accept()
                         self.send(
@@ -66,21 +74,40 @@ class ChatConsumer(WebsocketConsumer):
                                 }
                             )
                         )
+                        should_add_customer_to_queue = True
+                    else:
+                        free_customer_rep.max_capacity = F("max_capacity") - 1
+                        free_customer_rep.save()
+                        self.conversation.customer_rep = free_customer_rep
+                        self.conversation.save()
+                if should_add_customer_to_queue:
+                    set_queue_lock = Redlock(
+                        key="conversation_id:set:id", masters={r}, auto_release_time=2
+                    )
+                    list_queue_lock = Redlock(
+                        key="conversation_id:id", masters={r}, auto_release_time=2
+                    )
+
+                    if set_queue_lock.acquire() and list_queue_lock.acquire():
                         if r.sismember("conversation_id:set:id", self.room_name) != 1:
-                            print(r.llen("conversation_id:id"))
                             r.lpush("conversation_id:id", self.room_name)
                             r.sadd("conversation_id:set:id", self.room_name)
+                        set_queue_lock.release()
+                        list_queue_lock.release()
 
-                        self.close()
-                        raise StopConsumer()
-                    self.conversation.customer_rep = free_customer_rep
-                    free_customer_rep.max_capacity = F("max_capacity") - 1
-                    free_customer_rep.save()
-                    self.conversation.save()
-                self.accept()
-        if hasattr(self.user, "customer_support_profile"):
+                    self.close()
+                    raise StopConsumer()
+            self.accept()
+        elif hasattr(self.user, "customer_support_profile"):
             if self.user.customer_support_profile == self.conversation.customer_rep:
                 self.accept()
+        else:
+            self.accept()
+            self.send(
+                text_data=json.dumps({"message": "You have accessed  the wrong url."})
+            )
+            self.close()
+            raise StopConsumer()
 
     def receive(self, text_data=None, bytes_data=None):
         text_data_json = json.loads(text_data)
@@ -107,18 +134,32 @@ class ChatConsumer(WebsocketConsumer):
         if hasattr(self.user, "customer_support_profile") and bool(close_chat):
             self.conversation.customer_rep = None
             self.conversation.save()
-            conversation_id = r.rpop("conversation_id:id")
+            set_queue_rem_lock = Redlock(
+                key="conversation_id:set:id", masters={r}, auto_release_time=3
+            )
+            list_queue_pop_lock = Redlock(
+                key="conversation_id:id", masters={r}, auto_release_time=3
+            )
 
-            print(conversation_id)
-            if conversation_id:
-                r.srem("conversation_id:set:id", conversation_id)
-                self.send(text_data=json.dumps({"redirect_id": conversation_id}))
-                conversation = Conversation.objects.get(id=conversation_id)
-                conversation.customer_rep = self.user.customer_support_profile
-                conversation.save()
-            else:
-                self.user.customer_support_profile.max_capacity = F("max_capacity") + 1
-                self.user.customer_support_profile.save()
+            if set_queue_rem_lock.acquire() and list_queue_pop_lock.acquire():
+                conversation_id = r.rpop("conversation_id:id")
+                if conversation_id:
+                    r.srem("conversation_id:set:id", conversation_id)
+                    self.send(text_data=json.dumps({"redirect_id": conversation_id}))
+                    set_queue_rem_lock.release()
+                    list_queue_pop_lock.release()
+                    conversation = Conversation.objects.select_for_update().get(
+                        id=conversation_id
+                    )
+                    with transaction.atomic():
+                        conversation.customer_rep = self.user.customer_support_profile
+                        conversation.save()
+                else:
+                    self.user.customer_support_profile.max_capacity = (
+                        F("max_capacity") + 1
+                    )
+                    self.user.customer_support_profile.save()
+
             self.close()
             raise StopConsumer()
 
